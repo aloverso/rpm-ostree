@@ -78,60 +78,6 @@ def replace_nsswitch(target_usretc):
     f.close()
     newf.close()
     os.rename(nsswitch_conf + '.tmp', nsswitch_conf)
-
-def do_kernel_prep(yumroot, logs_lookaside):
-    bootdir = os.path.join(yumroot, 'boot')
-    kernel_path = None
-    for name in os.listdir(bootdir):
-        if name.startswith('vmlinuz-'):
-            kernel_path = os.path.join(bootdir, name)
-            break
-        elif name.startswith('initramfs-'):
-            # If somehow the %post generated an initramfs, blow it
-            # away - we take over that role.
-            initramfs_path = os.path.join(bootdir, name)
-            log("Removing RPM-generated " + initramfs_path)
-            rmrf(initramfs_path)
-
-    if kernel_path is None:
-        raise ValueError("Failed to find vmlinuz- in " + bootdir)
-
-    kname = os.path.basename(kernel_path)
-    kver = kname[kname.find('-') + 1:]
-    log("Kernel version is " + kver)
-           
-    # OSTree will take care of this
-    loaderdir = os.path.join(bootdir, 'loader')
-    rmrf(loaderdir)
-
-    args = ['chroot', yumroot, 'depmod', kver]
-    log("Running: %s" % (subprocess.list2cmdline(args), ))
-    subprocess.check_call(args)
-
-    # Copy of code from gnome-continuous; yes, we hardcode
-    # the machine id for now, because distributing pre-generated
-    # initramfs images with dracut/systemd at the moment
-    # effectively requires this.
-    # http://lists.freedesktop.org/archives/systemd-devel/2013-July/011770.html
-    log("Hardcoding machine-id")
-    f = open(os.path.join(yumroot, 'etc', 'machine-id'), 'w')
-    f.write('45bb3b96146aa94f299b9eb43646eb35\n')
-    f.close()
-
-    args = ['chroot', yumroot,
-            'dracut', '-v', '--tmpdir=/tmp',
-            '-f', '/tmp/initramfs.img', kver];
-    log("Running: %s" % (subprocess.list2cmdline(args), ))
-    subprocess.check_call(args)
-    
-    initramfs_path = os.path.join(yumroot, 'tmp', 'initramfs.img')
-    if not os.path.exists(initramfs_path):
-        raise ValueError("Failed to find " + initramfs_path)
-
-    os.rename(initramfs_path, os.path.join(bootdir, 'initramfs-' + kver + '.img'))
-    varlog_dracut_path = os.path.join(yumroot, 'var', 'log', 'dracut.log')
-    if os.path.exists(varlog_dracut_path):
-        os.rename(varlog_dracut_path, os.path.join(logs_lookaside, 'dracut.log'))
     
 def runyum(argv, yumroot, stdin_str=None):
     yumargs = list(['yum', '-y', '--releasever=%s' % (opts.os_version, ), '--nogpg', '--setopt=keepcache=1', '--installroot=' + yumroot, '--disablerepo=*'])
@@ -312,11 +258,6 @@ def main():
     os.rename(rpmtextlist_new, rpmtextlist)
 
     if opts.breakpoint == 'post-yum-phase2':
-        return
-
-    do_kernel_prep(yumroot, logs_lookaside)
-
-    if opts.breakpoint == 'post-yum':
         return
 
     argv = ['rpm-ostree-postprocess-and-commit',
