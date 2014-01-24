@@ -103,50 +103,6 @@ init_rootfs (GFile         *targetroot,
 }
 
 static gboolean
-replace_nsswitch (GFile         *target_usretc,
-                  GCancellable  *cancellable,
-                  GError       **error)
-{
-  gboolean ret = FALSE;
-  gs_unref_object GFile *nsswitch_conf =
-    g_file_get_child (target_usretc, "nsswitch.conf");
-  gs_free char *nsswitch_contents = NULL;
-  gs_free char *new_nsswitch_contents = NULL;
-
-  static gsize regex_initialized;
-  static GRegex *passwd_regex;
-
-  if (g_once_init_enter (&regex_initialized))
-    {
-      passwd_regex = g_regex_new ("^(passwd|group):\\s+files(.*)$",
-                                  G_REGEX_MULTILINE, 0, NULL);
-      g_assert (passwd_regex);
-      g_once_init_leave (&regex_initialized, 1);
-    }
-
-  nsswitch_contents = gs_file_load_contents_utf8 (nsswitch_conf, cancellable, error);
-  if (!nsswitch_contents)
-    goto out;
-
-  new_nsswitch_contents = g_regex_replace (passwd_regex,
-                                           nsswitch_contents, -1, 0,
-                                           "\\1: files altfiles\\2",
-                                           0, error);
-  if (!new_nsswitch_contents)
-    goto out;
-
-  if (!g_file_replace_contents (nsswitch_conf, new_nsswitch_contents,
-                                strlen (new_nsswitch_contents),
-                                NULL, FALSE, 0, NULL,
-                                cancellable, error))
-    goto out;
-
-  ret = TRUE;
- out:
-  return ret;
-}
-
-static gboolean
 find_kernel_and_initramfs_in_bootdir (GFile       *bootdir,
                                       GFile      **out_kernel,
                                       GFile      **out_initramfs,
