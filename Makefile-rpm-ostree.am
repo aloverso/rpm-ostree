@@ -17,6 +17,8 @@
 
 bin_SCRIPTS += rpm-ostree
 
+pkglibexecdir_SCRIPTS = src/rpmqa-sorted
+
 rpm-ostree: src/rpm-ostree.in Makefile
 	$(AM_V_GEN) sed -e s,@PYTHON\@,$(PYTHON), -e s,@pkglibdir\@,$(pkglibdir), $< > $@.tmp && mv $@.tmp $@
 	@chmod a+x $@
@@ -24,7 +26,7 @@ rpm-ostree: src/rpm-ostree.in Makefile
 bin_PROGRAMS += rpm-ostree-postprocess-and-commit
 
 rpm_ostree_postprocess_and_commit_SOURCES = src/rpm-ostree-postprocess-and-commit.c
-rpm_ostree_postprocess_and_commit_CFLAGS = $(AM_CFLAGS) -I$(srcdir)/libgsystem -DPKGLIBDIR=\"$(pkglibdir)\" $(PKGDEP_OSTREE_CFLAGS)
+rpm_ostree_postprocess_and_commit_CFLAGS = $(AM_CFLAGS) -I$(srcdir)/libgsystem -DPKGLIBDIR=\"$(pkglibdir)\" -DPKGLIBEXECDIR=\"$(pkglibexecdir)\" $(PKGDEP_OSTREE_CFLAGS)
 rpm_ostree_postprocess_and_commit_LDADD = $(AM_LDFLAGS) $(PKGDEP_OSTREE_LIBS) libgsystem.la
 
 pyrpmostreedir = $(pkglibdir)/rpm-ostree

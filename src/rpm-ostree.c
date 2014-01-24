@@ -26,9 +26,11 @@
 #include "libgsystem.h"
 
 static char **opt_enable_repos;
+static char *opt_workdir;
 
 static GOptionEntry option_entries[] = {
   { "enablerepo", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_enable_repos, "Repositories to enable", "REPO" },
+  { "workdir", 0, 0, G_OPTION_ARG_STRING, &opt_workdir, "Working directory", "REPO" },
   { NULL }
 };
 
@@ -230,128 +232,160 @@ yuminstall (GFile   *yumroot,
   return ret;
 }
 
-def main():
-    parser = optparse.OptionParser('%prog ACTION PACKAGE1 [PACKAGE2...]')
-    parser.add_option('', "--workdir",
-                      action='store', dest='workdir',
-                      default=os.getcwd(),
-                      help="Path to working directory (default: cwd)")
-    parser.add_option('', "--deploy",
-                      action='store_true',
-                      default=False,
-                      help="Do a deploy if true")
-    parser.add_option('', "--breakpoint",
-                      action='store',
-                      default=None,
-                      help="Stop at given phase")
-    parser.add_option('', "--name",
-                      action='store',
-                      default=None,
-                      help="Use NAME as ref name")
-    parser.add_option('', "--os",
-                      action='store', dest='os',
-                      default=None,
-                      help="OS Name (default from /etc/os-release)")
-    parser.add_option('', "--os-version",
-                      action='store', dest='os_version',
-                      default=None,
-                      help="OS version (default from /etc/os-release)")
-    parser.add_option('', "--enablerepo",
-                      action='append', dest='enablerepo',
-                      default=[],
-                      help="Enable this yum repo")
-    parser.add_option('', "--local-ostree-package",
-                      action='store', dest='local_ostree_package',
-                      default='ostree',
-                      help="Path to local OSTree RPM")
+static int
+main (int     argc,
+      char  **argv)
+{
+  GError *local_error = NULL;
+  GError **error = &local_error;
+  GOptionContext *context = g_option_context_new ("- Run yum and commit the result to an OSTree repository");
+  const char *ref;
+  gs_free char *ref_unix = NULL;
+  gs_unref_object GFile *cachedir = NULL;
+  gs_unref_object GFile *yumroot = NULL;
+  gs_unref_object GFile *targetroot = NULL;
+  
+  g_option_context_add_main_entries (context, option_entries, NULL);
 
-    global opts
-    global args
-    (opts, args) = parser.parse_args(sys.argv[1:])
+  if (!g_option_context_parse (context, &argc, &argv, error))
+    goto out;
 
-    os.chdir(opts.workdir)
+  if (argc < 2)
+    {
+      g_printerr ("usage: %s create REFNAME PACKAGE [PACKAGE...]\n", argv[0]);
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                   "Option processing failed");
+      goto out;
+    }
+  
+  ref = argv[1];
 
-    if (opts.deploy and
-        (opts.os is None or
-        opts.os_version is None)):
-        f = open('/etc/os-release')
-        for line in f.readlines():
-            if line == '': continue
-            (k,v) = line.split('=', 1)
-            os_release_data[k.strip()] = v.strip()
-        f.close()
+  if (opt_workdir)
+    (void) chdir (opt_workdir);
 
-        if opts.os is None:
-            opts.os = os_release_data['ID']
-        if opts.os_version is None:
-            opts.os_version = os_release_data['VERSION_ID']
+  cachedir = g_file_new_for_path ("cache");
+  if (!gs_file_ensure_directory (cachedir, TRUE, cancellable, error))
+    goto out;
 
-    log("Targeting os=%s version=%s" % (opts.os, opts.os_version))
+  yumroot = g_file_get_child (cachedir, "yum");
+  targetroot = g_file_resolve_relative_path (cachedir, "rootfs");
+  yumcachedir = g_file_resolve_relative_path (yumroot, "var/cache/yum");
+  yumcache_lookaside = g_file_resolve_relative_path (cachedir, "yum-cache");
+  logs_lookaside = g_file_resolve_relative_path (cachedir, "logs");
+  
+  if (!gs_shutil_rm_rf (logs_lookaside, cancellable, error))
+    goto out;
+  if (!gs_file_ensure_directory (logs_lookaside, TRUE, cancellable, error))
+    goto out;
 
-    action = args[0]
-    if action == 'create':
-        ref = args[1]
-        packages = args[2:]
-        commit_message = 'Commit of %d packages' % (len(packages), )
-    else:
-        print >>sys.stderr, "Unknown action %s" % (action, )
-        sys.exit(1)
+  if (!gs_shutil_rm_rf (yumroot, cancellable, error))
+    goto out;
+  yumroot_varcache = g_file_resolve_relative_path (yumroot, "var/cache");
+  if (g_file_query_exists (yumcache_lookaside, NULL))
+    {
+      g_print ("Reusing cache: %s\n", gs_file_get_path_cached (yumroot_varcache));
+      if (!gs_file_ensure_directory (yumroot_varcache, TRUE, cancellable, error))
+        goto out;
+      if (!gs_shutil_cp_al_or_fallback (yumcache_lookaside, yumcahedir,
+                                        cancellable, error))
+        goto out;
+    }
+  else
+    {
+      g_print ("No cache found at: %s\n", gs_file_get_path_cached (yumroot_varcache));
+    }
 
-    cachedir = os.path.join(opts.workdir, 'cache')
-    ensuredir(cachedir)
+  /* Ensure we have enough to modify NSS */
+  {
+    char *packages_for_nss[] = {"filesystem", "glibc", "nss-altfiles", "shadow-utils", NULL };
+    if (!yuminstall (yumroot, packages_for_nss, cancellable, error))
+      goto out;
+  }
 
-    yumroot = os.path.join(cachedir, 'yum')
-    targetroot = os.path.join(cachedir, 'rootfs')
-    yumcachedir = os.path.join(yumroot, 'var/cache/yum')
-    yumcache_lookaside = os.path.join(cachedir, 'yum-cache')
-    logs_lookaside = os.path.join(cachedir, 'logs')
+  /* Prepare NSS configuration; this needs to be done
+     before any invocations of "useradd" in %post */
 
-    rmrf(logs_lookaside)
-    ensuredir(logs_lookaside)
+  {
+    gs_unref_object GFile *yumroot_passwd =
+      g_file_resolve_relative_path (yumroot, "usr/lib/passwd");
+    gs_unref_object GFile *yumroot_group =
+      g_file_resolve_relative_path (yumroot, "usr/lib/group");
+    gs_unref_object GFile *yumroot_etc = 
+      g_file_resolve_relative_path (yumroot, "etc");
 
-    shutil.rmtree(yumroot, ignore_errors=True)
-    yumroot_varcache = os.path.join(yumroot, 'var/cache')
-    if os.path.isdir(yumcache_lookaside):
-        log("Reusing cache: " + yumroot_varcache)
-        ensuredir(yumroot_varcache)
-        subprocess.check_call(['cp', '-a', yumcache_lookaside, yumcachedir])
-    else:
-        log("No cache found at: " + yumroot_varcache)
+    if (!g_file_replace_contents (yumroot_passwd, "", 0, NULL, FALSE, 0,
+                                  NULL, cancellable, error))
+      goto out;
+    if (!g_file_replace_contents (yumroot_group, "", 0, NULL, FALSE, 0,
+                                  NULL, cancellable, error))
+      goto out;
 
-    # Ensure we have enough to modify NSS
-    yuminstall(yumroot, ['filesystem', 'glibc', 'nss-altfiles', 'shadow-utils'])
+    if (!replace_nsswitch (yumroot_etc, cancellable, error))
+      goto out;
+  }
 
-    # Prepare NSS configuration; this needs to be done
-    # before any invocations of "useradd" in %post
-    for n in ['passwd', 'group']:
-        open(os.path.join(yumroot, 'usr/lib', n), 'w').close()
-    replace_nsswitch(os.path.join(yumroot, 'etc'))
-
-    if opts.breakpoint == 'post-yum-phase1':
-        return
+  {
+    GPtrArray *packages = g_ptr_array_new ();
+    int i;
+    for (i = 2; i < argc; i++)
+      g_ptr_array_add (packages, argv[i - 1]);
     
-    yuminstall(yumroot, packages)
+    g_ptr_array_add (packages, NULL);
 
-    ref_unix = ref.replace('/', '_')
+    if (!yuminstall (yumroot, (char**)packages->pdata,
+                     cancellable, error))
+      goto out;
+  }
 
-    # Attempt to cache stuff between runs
-    rmrf(yumcache_lookaside)
-    log("Saving yum cache " + yumcache_lookaside)
-    os.rename(yumcachedir, yumcache_lookaside)
+  ref_unix = g_strdelimit (g_strdup (ref), "/", '_');
 
-    yumroot_rpmlibdir = os.path.join(yumroot, 'var/lib/rpm')
-    rpmtextlist = os.path.join(cachedir, 'packageset-' + ref_unix + '.txt')
-    rpmtextlist_new = rpmtextlist + '.new'
-    rpmqa_proc = subprocess.Popen(['rpm', '-qa', '--dbpath=' + yumroot_rpmlibdir],
-                                  stdout=subprocess.PIPE)
-    sort_proc = subprocess.Popen(['sort'], stdin=rpmqa_proc.stdout,
-                                 stdout=open(rpmtextlist_new, 'w'))
-    proc_wait_check(rpmqa_proc)
-    proc_wait_check(sort_proc)
+  /* Attempt to cache stuff between runs */
+  if (!gs_shutil_rm_rf (yumcache_lookaside, cancellable, error))
+    goto out;
 
-    differs = True
-    if os.path.exists(rpmtextlist):
-        log("Comparing diff of previous tree")
+  g_print ("Saving yum cache %s\n", gs_file_get_path_cached (yumcache_lookaside));
+  if (!gs_file_rename (yumcachedir, yumcache_lookaside,
+                       cancellable, error))
+    goto out;
+
+  {
+    gs_unref_object GFile *yumroot_rpmlibdir = 
+      = g_file_resolve_relative_path (yumroot, "var/lib/rpm");
+    gs_free char *cached_packageset_name = g_strconcat ("packageset-", ref_unix, ".txt");
+    gs_unref_object GFile *rpmtextlist_path = 
+      = g_file_resolve_relative_path (cachedir, cached_packageset_name);
+    gs_free char *cached_packageset_name_new = g_strconcat (cached_packageset_name, ".new");
+    gs_unref_object GFile *rpmtextlist_path_new = 
+      = g_file_resolve_relative_path (cachedir, cached_packageset_name_new);
+    char *rpmqa_argv = { PKGLIBEXECDIR "/rpmqa-sorted", NULL };
+    gs_unref_object GSSubprocessContext *rpmqa_proc_ctx = NULL;
+    gs_unref_object GSSubprocess *rpmqa_proc = NULL;
+    gboolean differs = TRUE;
+      
+    rpmqa_proc_ctx = gs_subprocess_context_new (rpmqa_argv);
+    gs_subprocess_context_set_stdout_disposition (rpmqa_proc_ctx, gs_file_get_path_cached (rpmtextlist_path_new));
+    gs_subprocess_context_set_stderr_disposition (rpmqa_proc_ctx, GS_SUBPROCESS_STREAM_DISPOSITION_INHERIT);
+    rpmqa_proc = gs_subprocess_new (rpmqa_proc_ctx, cancellable, error);
+    if (!rpmqa_proc)
+      goto out;
+    
+    if (g_file_query_exists (rpmtextlist, NULL))
+      {
+        int diff_estatus;
+        gs_unref_object GSSubprocess *diff_proc;
+
+        g_print ("Comparing diff of previous tree\n");
+        diff_proc =
+          gs_subprocess_new_simple_argl (GS_SUBPROCESS_STREAM_DISPOSITION_INHERIT,
+                                         GS_SUBPROCESS_STREAM_DISPOSITION_INHERIT,
+                                         cancellable,
+                                         error,
+                                         "diff", "-u",
+                                         gs_file_get_path_cached (rpmtextlist),
+                                         gs_file_get_path_cached (rpmtextlist_new));
+
+        if (!gs_subprocess_wait_sync (diff_proc, 
+        
         rcode = subprocess.call(['diff', '-u', rpmtextlist, rpmtextlist_new])
         if rcode == 0:
             differs = False
@@ -370,7 +404,7 @@ def main():
         return
 
     argv = ['rpm-ostree-postprocess-and-commit',
-            '--repo=' + os.path.join(opts.workdir, 'repo'),
+            '--repo=' + g_file_resolve_relative_path (opts.workdir, 'repo'),
             '-m', commit_message,
             yumroot,
             ref]
@@ -378,3 +412,22 @@ def main():
     subprocess.check_call(argv)
 
     log("Complete")
+
+ out:
+  if (local_error != NULL)
+    {
+      int is_tty = isatty (1);
+      const char *prefix = "";
+      const char *suffix = "";
+      if (is_tty)
+        {
+          prefix = "\x1b[31m\x1b[1m"; /* red, bold */
+          suffix = "\x1b[22m\x1b[0m"; /* bold off, color reset */
+        }
+      g_printerr ("%serror: %s%s\n", prefix, suffix, local_error->message);
+      g_error_free (local_error);
+      return 2;
+    }
+  else
+    return 0;
+}
