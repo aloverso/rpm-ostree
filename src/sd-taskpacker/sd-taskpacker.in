@@ -1,4 +1,5 @@
-# Copyright (C) 2011,2013 Colin Walters <walters@verbum.org>
+#!/bin/sh
+# Copyright (C) 2012,2013 Colin Walters <walters@verbum.org>
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -15,19 +16,12 @@
 # Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 # Boston, MA 02111-1307, USA.
 
-include Makefile-decls.am
+# Don't auto-spawn a session bus
+export GIO_USE_VFS=local
+export GJSPKG_GLOBAL_DATADIR=@datadir@
+export GJSPKG_DATADIR=@pkgdatadir@/sd-taskpacker
+export GJSPKG_LIBDIR=@pkglibdir@/sd-taskpacker
 
-privdatadir=$(pkglibdir)
+jsdir=$GJSPKG_DATADIR/js
 
-ACLOCAL_AMFLAGS += -I m4 ${ACLOCAL_FLAGS}
-AM_CPPFLAGS += -DDATADIR='"$(datadir)"' \
-	-DLIBEXECDIR='"$(libexecdir)"' \
-	-DLOCALEDIR=\"$(datadir)/locale\" \
-	-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_36 -DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_36
-AM_CFLAGS += $(WARN_CFLAGS)
-
-EXTRA_DIST += autogen.sh COPYING
-
-include Makefile-rpm-ostree.am
-include Makefile-autobuilder.am
-include Makefile-sd-taskpacker.am
+exec $GJSPKG_GDB gjs -I "${jsdir}" "${jsdir}/main.js" "$@"

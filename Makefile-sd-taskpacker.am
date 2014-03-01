@@ -1,0 +1,42 @@
+# Copyright (C) 2011,2014 Colin Walters <walters@verbum.org>
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library; if not, write to the
+# Free Software Foundation, Inc., 59 Temple Place - Suite 330,
+# Boston, MA 02111-1307, USA.
+
+task_substitutions= \
+	-e s,@datadir\@,$(datadir), \
+	-e s,@libdir\@,$(libdir), \
+	-e s,@pkglibdir\@,$(pkglibdir), \
+	-e s,@datarootdir\@,$(datarootdir), \
+	-e s,@pkgdatadir\@,$(pkgdatadir), \
+	$(NULL)
+
+sd-taskpacker: src/sd-taskpacker/sd-taskpacker.in Makefile
+	sed $(task_substitutions) $< > $@.tmp && mv $@.tmp $@
+EXTRA_DIST += src/sd-taskpacker/sd-taskpacker.in
+
+taskpacker_privlibdir=$(libdir)/sd-taskpacker
+
+bin_SCRIPTS += sd-taskpacker
+
+jstaskdir=$(pkgdatadir)/sd-taskpacker/js
+jstask_DATA= \
+	src/sd-taskpacker/js/main.js \
+	src/sd-taskpacker/js/taskpacker.js \
+	src/sd-taskpacker/js/jsutil.js \
+	$(NULL)
+
+systemdsystemunitdir = $(shell pkg-config --variable=systemdsystemunitdir systemd)
+systemdsystemunit_DATA = src/sd-taskpacker/sd-taskpacker.service

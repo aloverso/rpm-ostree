@@ -1,0 +1,6 @@
+[Unit]
+Description=sd-taskpacker
+
+[Service]
+BusName=org.verbum.SdTaskPacker
+ExecStart=/usr/bin/sd-taskpacker
