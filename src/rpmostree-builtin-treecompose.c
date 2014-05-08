@@ -28,6 +28,8 @@
 #include "rpmostree-builtins.h"
 #include "rpmostree-postprocess.h"
 
+#include <libhif.h>
+#include <libhif/hif-repos.h>
 #include "libgsystem.h"
 
 static char *opt_workdir;
@@ -646,6 +648,8 @@ rpmostree_builtin_treecompose (int             argc,
   JsonArray *units = NULL;
   guint len;
   gs_free char *ref_unix = NULL;
+  gs_unref_object HifContext *hifctx = NULL;
+  gs_unref_object HifRepos *hifrepos = NULL;
   gs_unref_object GFile *workdir = NULL;
   gs_unref_object GFile *cachedir = NULL;
   gs_unref_object GFile *yumroot = NULL;
@@ -746,6 +750,22 @@ rpmostree_builtin_treecompose (int             argc,
   if (!ref)
     goto out;
 
+  hifctx = hif_context_new ();
+  hif_context_set_repo_dir (hifctx, "/etc/yum.repos.d");
+  {
+    gs_free char *metadata_cache = g_build_filename (gs_file_get_path_cached (workdir),
+                                               "metadata", NULL);
+    gs_free char *solv_cache = g_build_filename (gs_file_get_path_cached (workdir),
+                                                 "solv", NULL);
+    hif_context_set_cache_dir (hifctx, metadata_cache);
+    hif_context_set_solv_dir (hifctx, solv_cache);
+  }
+  hif_context_set_check_disk_space (hifctx, TRUE);
+  hif_context_set_check_transaction (hifctx, TRUE);
+  hif_context_set_keep_cache (hifctx, FALSE);
+
+  hifrepos = hif_repos_new (hifctx);
+
   ref_unix = g_strdelimit (g_strdup (ref), "/", '_');
 
   bootstrap_packages = g_ptr_array_new ();
@@ -758,11 +778,35 @@ rpmostree_builtin_treecompose (int             argc,
   if (!append_string_array_to (treefile, "packages", packages, error))
     goto out;
   g_ptr_array_add (packages, NULL);
-    
 
   {
     guint i;
+    GPtrArray *hifsources = hif_repos_get_sources (hifrepos, error);
 
+    if (!hifsources)
+      goto out;
+
+    for (i = 0; i < hifsources->len; i++)
+      {
+        HifSource *hifsrc = hifsources->pdata[i];
+        g_print ("repo: %s enabled=%d\n", hif_source_get_id (hifsrc),
+                 hif_source_get_enabled (hifsrc));
+      }
+  }
+    
+  {
+    guint i;
+
+    if (!hif_context_setup (hifctx, cancellable, error))
+      goto out;
+
+    for (i = 0; i < bootstrap_packages->len; i++)
+      {
+        const char *pkg = bootstrap_packages->pdata[i];
+
+        if (!hif_context_install (hifctx, pkg, error))
+          goto out;
+      }
     /* Ensure we have enough to modify NSS */
     if (!yuminstall (treefile, yumroot, workdir,
                      (char**)bootstrap_packages->pdata,
